@@ -4,13 +4,13 @@ A small, lightweight tracker for the shaman Maelstrom Weapon buff in WoW Classic
 
 A movable icon shows your current Maelstrom Weapon stacks. At 5 stacks a glow ring around the icon blinks slowly, so you never miss an instant spell. You can also turn on a glow around the edges of the screen at 5 stacks.
 
-WoW Forever hides buff information from addons during combat. Maelstrom Tracker works around this by reading Lightning Bolt's cast time, which Maelstrom Weapon shortens with each stack. It takes your talent points into account and calibrates itself out of combat as you play, so the count stays accurate.
+WoW Forever hides buff information from addons during combat. Maelstrom Tracker works around this by letting the game draw the buff itself: the icon, stack count, duration sweep and 5-stack glows are handed to the game's own aura display, so they stay accurate in combat.
 
 Available on [CurseForge](https://www.curseforge.com/projects/1795373).
 
 ## Features
 
-- Shows your Maelstrom Weapon stack count, with a duration sweep out of combat
+- Shows your Maelstrom Weapon stack count, with a duration sweep
 - Blinking glow ring at 5 stacks
 - Optional glow around the edges of the screen at 5 stacks
 - Drag the icon anywhere on screen, or lock it in place
@@ -34,13 +34,6 @@ Other commands:
 - `/mwt lock` / `/mwt unlock`
 - `/mwt reset` moves the icon back to its default position.
 - `/mwt debug` prints what the addon currently sees.
-- `/mwt recalibrate` clears the cast-time calibration.
-
-## How it works in combat
-
-WoW Forever hides buff data from addons during combat. Out of combat the addon reads the buff directly. In combat it works out the stack count from Lightning Bolt's cast time, which Maelstrom Weapon shortens by 4% per stack for each talent point.
-
-To keep that accurate, the addon records the real cast time at each stack count while it can still see the buff, so it calibrates itself as you play. Leave combat with different stack counts up once in a while, especially after changing talents. The duration sweep only shows out of combat.
 
 ## Notes
 

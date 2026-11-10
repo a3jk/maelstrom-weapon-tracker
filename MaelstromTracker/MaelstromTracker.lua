@@ -1,22 +1,24 @@
 -- Maelstrom Tracker: a tiny WeakAura-style display for Maelstrom Weapon stacks.
 --
--- WoW Forever blocks addons from reading auras in combat ("secret" auras).
--- So we use two sources:
---   1. The aura itself, whenever the game allows reading it (out of combat).
---   2. Lightning Bolt's cast time: each Maelstrom stack cuts it by 20%,
---      so at 5 stacks it is 0 (instant). Spell info isn't aura data.
+-- WoW Forever hides aura data from addons in combat ("secret" values), so we
+-- never read the stack count ourselves. Instead we hand our widgets to the
+-- game's own aura display (CustomAuraContainerTemplate, Blizzard_AuraContainer)
+-- and let it fill them in:
+--   * the icon, the duration sweep and the stack count text;
+--   * an "application bar" with a minimum of 5 stacks, which the game hides
+--     below 5. The 5-stack glows are children of such bars, so they only show
+--     at 5 stacks, in combat too.
+-- Our own code only touches these widgets out of combat.
 
 local ADDON = ...
 local MAX_STACKS = 5
 local SIZE = 48
-local PER_STACK = 0.20
+local MAX_COLOR = "|cff66e6ff" -- stack count color at 5 stacks
 
 -- Maelstrom Weapon buff IDs: Forever 408505, Wrath 53817, retail 344179.
 local SPELL_IDS = { 408505, 53817, 344179 }
 local FALLBACK_ICON = 237584
-
--- Spells Maelstrom makes faster; the first one the player knows is the probe.
-local PROBE_SPELLS = { 403, 421, 331, 8004, 1064 } -- LB, CL, HW, LHW, CH
+local GLOW_TEXTURE = "Interface\\AddOns\\MaelstromTracker\\Media\\glow.tga"
 
 local _, playerClass = UnitClass("player")
 if playerClass ~= "SHAMAN" then return end
@@ -32,16 +34,13 @@ end
 
 local buffName = SpellName(408505) or SpellName(53817)
 
----------------------------------------------------------------------------
--- Source 1: the aura (only when not secret)
----------------------------------------------------------------------------
 local function AurasLocked()
     return C_Secrets and C_Secrets.ShouldAurasBeSecret and C_Secrets.ShouldAurasBeSecret() == true
 end
 
--- Returns aura (or false if none) when readable; nil when the game blocks it.
+-- Only used out of combat (icon texture) and by /mwt debug.
+-- Returns the aura, or false if the buff isn't up, or nil if the game blocks it.
 local function ReadAura()
-    if AurasLocked() then return nil end
     for _, id in ipairs(SPELL_IDS) do
         local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
         if not ok then return nil end
@@ -53,108 +52,6 @@ local function ReadAura()
         if aura then return aura end
     end
     return false
-end
-
----------------------------------------------------------------------------
--- Source 2: Lightning Bolt cast time
----------------------------------------------------------------------------
-local baseCast -- cast time (ms) of the probe spell with 0 stacks
-local talentRank, talentMax -- Maelstrom Weapon talent points (nil if unknown)
-local learnedPerStack       -- fallback: per-stack reduction observed from the aura
-
--- Find the Maelstrom Weapon talent in the talent trees (classic-style API).
-local function UpdateTalent()
-    talentRank, talentMax = nil, nil
-    if not (GetNumTalentTabs and GetNumTalents and GetTalentInfo and buffName) then return end
-    local ok = pcall(function()
-        for tab = 1, GetNumTalentTabs() do
-            for i = 1, GetNumTalents(tab) do
-                local name, _, _, _, rank, maxRank = GetTalentInfo(tab, i)
-                if name == buffName then
-                    talentRank, talentMax = rank or 0, maxRank or 5
-                    return
-                end
-            end
-        end
-    end)
-    if not ok then talentRank, talentMax = nil, nil end
-end
-
--- Cast-time reduction per stack: 20% at full talent, scaled by points spent.
-local function PerStack()
-    if talentRank and talentMax and talentMax > 0 then
-        return PER_STACK * talentRank / talentMax
-    end
-    return learnedPerStack or PER_STACK
-end
-
-local function ProbeCastTime()
-    for _, id in ipairs(PROBE_SPELLS) do
-        local name = SpellName(id)
-        if name then
-            -- Looking up by name returns the player's highest known rank.
-            local ok, info = pcall(C_Spell.GetSpellInfo, name)
-            if ok and info and info.castTime ~= nil and not IsSecret(info.castTime) then
-                return info.castTime
-            end
-        end
-    end
-end
-
--- Calibration: real cast-time ratios (cast / 0-stack cast) observed per stack
--- count while the aura is readable, saved per talent rank.
-local function CalibTable()
-    if not MaelstromTrackerDB then return nil end
-    MaelstromTrackerDB.calib = MaelstromTrackerDB.calib or {}
-    local key = tostring(talentRank or "unknown")
-    MaelstromTrackerDB.calib[key] = MaelstromTrackerDB.calib[key] or {}
-    return MaelstromTrackerDB.calib[key]
-end
-
-local function ExpectedRatio(s)
-    if s == 0 then return 1 end
-    local t = CalibTable()
-    if t and t[s] then return t[s] end
-    return 1 - PerStack() * s
-end
-
-local function StacksFromCastTime()
-    local cast = ProbeCastTime()
-    if not cast or not baseCast or baseCast <= 0 then return nil end
-    if PerStack() <= 0 and not (CalibTable() or {})[1] then return nil end
-    local ratio = cast / baseCast
-    -- Pick the stack count whose expected ratio is closest to what we see.
-    local best, bestDiff = 0, math.huge
-    for s = 0, MAX_STACKS do
-        local d = math.abs(ratio - ExpectedRatio(s))
-        if d < bestDiff then best, bestDiff = s, d end
-    end
-    return best
-end
-
--- While the aura is readable: learn the 0-stack cast time (handles haste)
--- and record the real ratio for the current stack count.
-local zeroStackBase -- base measured directly with no stacks up
-local function LearnBaseCast(stacks)
-    local cast = ProbeCastTime()
-    if not cast then return end
-    if stacks == 0 then
-        if cast > 0 then baseCast, zeroStackBase = cast, cast end
-        return
-    end
-    if zeroStackBase and zeroStackBase > 0 then
-        local ratio = cast / zeroStackBase
-        local t = CalibTable()
-        if t and stacks <= MAX_STACKS then t[stacks] = ratio end
-        if not talentRank then
-            local per = (1 - ratio) / stacks
-            if per > 0 then learnedPerStack = per end
-        end
-        baseCast = zeroStackBase
-    else
-        local factor = ExpectedRatio(stacks)
-        if factor > 0.01 and cast > 0 then baseCast = cast / factor end
-    end
 end
 
 ---------------------------------------------------------------------------
@@ -172,93 +69,226 @@ f:RegisterForDrag("LeftButton")
 local body = CreateFrame("Frame", nil, f)
 body:SetAllPoints()
 
-f.border = body:CreateTexture(nil, "BACKGROUND")
-f.border:SetPoint("TOPLEFT", -2, 2)
-f.border:SetPoint("BOTTOMRIGHT", 2, -2)
-f.border:SetColorTexture(0, 0, 0, 1)
+local function Border(parent)
+    local t = parent:CreateTexture(nil, "BACKGROUND")
+    t:SetPoint("TOPLEFT", -2, 2)
+    t:SetPoint("BOTTOMRIGHT", 2, -2)
+    t:SetColorTexture(0, 0, 0, 1)
+end
 
-f.icon = body:CreateTexture(nil, "ARTWORK")
+-- Shown when the buff is down (if "show with no stacks" is on); the game's
+-- aura button covers it while the buff is up.
+local empty = CreateFrame("Frame", nil, body)
+empty:SetAllPoints()
+Border(empty)
+f.icon = empty:CreateTexture(nil, "ARTWORK")
 f.icon:SetAllPoints()
 f.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 f.icon:SetTexture(FALLBACK_ICON)
+f.icon:SetDesaturated(true)
+f.icon:SetAlpha(0.4)
 
-f.cd = CreateFrame("Cooldown", nil, body, "CooldownFrameTemplate")
-f.cd:SetAllPoints()
-f.cd:SetDrawEdge(false)
-f.cd:SetHideCountdownNumbers(true)
+-- Slow alpha blink (looping) on a region.
+local function Blink(region)
+    local group = region:CreateAnimationGroup()
+    group:SetLooping("BOUNCE")
+    local fade = group:CreateAnimation("Alpha")
+    fade:SetFromAlpha(1)
+    fade:SetToAlpha(0.2)
+    fade:SetDuration(0.8)
+    fade:SetSmoothing("IN_OUT")
+    return group
+end
 
-local overlay = CreateFrame("Frame", nil, body)
-overlay:SetAllPoints()
-overlay:SetFrameLevel(f.cd:GetFrameLevel() + 2)
+-- Icon glow texture (Media/glow.tga, made by tools/make_glow.py). The icon
+-- fills the centre half of the texture, so draw it at 2x icon size.
+local glows = {}
+local function IconGlow(parent)
+    local t = parent:CreateTexture(nil, "OVERLAY")
+    t:SetTexture(GLOW_TEXTURE)
+    t:SetPoint("CENTER")
+    t:SetSize(SIZE * 2, SIZE * 2)
+    glows[#glows + 1] = t
+    return t
+end
 
-f.count = overlay:CreateFontString(nil, "OVERLAY", "NumberFontNormalHuge")
-f.count:SetPoint("CENTER")
-
--- 5-stack glow: custom texture (Media/glow.tga, made by tools/make_glow.py).
--- The icon fills the centre half of the texture, so draw it at 2x icon size.
-f.glow = overlay:CreateTexture(nil, "OVERLAY")
-f.glow:SetTexture("Interface\\AddOns\\MaelstromTracker\\Media\\glow.tga")
-f.glow:SetPoint("CENTER")
-f.glow:SetSize(SIZE * 2, SIZE * 2)
-f.glow:Hide()
-
--- Slow blink on the glow only; the icon itself stays solid.
-local blink = f.glow:CreateAnimationGroup()
-blink:SetLooping("BOUNCE")
-local fade = blink:CreateAnimation("Alpha")
-fade:SetFromAlpha(1)
-fade:SetToAlpha(0.2)
-fade:SetDuration(0.8)
-fade:SetSmoothing("IN_OUT")
-blink:SetScript("OnStop", function() f.glow:SetAlpha(1) end)
-
----------------------------------------------------------------------------
 -- Screen edge glow: gradient strips along each screen edge. Each strip spans
 -- the full edge, so they overlap in the corners instead of leaving gaps.
----------------------------------------------------------------------------
-local screenGlow = CreateFrame("Frame", "MaelstromTrackerScreenGlow", UIParent)
-screenGlow:SetAllPoints(UIParent)
-screenGlow:SetFrameStrata("BACKGROUND")
-screenGlow:EnableMouse(false)
-screenGlow:Hide()
-
 -- opaqueAtMin: gradient runs min -> max (left->right, bottom->top).
 local edges = {}
-local function EdgeStrip(orientation, opaqueAtMin, a1, a2, horizontal)
-    local t = screenGlow:CreateTexture(nil, "ARTWORK")
-    t:SetColorTexture(1, 1, 1, 1)
-    t:SetPoint(a1); t:SetPoint(a2)
-    edges[#edges + 1] = { tex = t, orientation = orientation,
-                          opaqueAtMin = opaqueAtMin, horizontal = horizontal }
+local function EdgeStrips(parent)
+    local function Strip(orientation, opaqueAtMin, a1, a2, horizontal)
+        local t = parent:CreateTexture(nil, "ARTWORK")
+        t:SetColorTexture(1, 1, 1, 1)
+        t:SetPoint(a1); t:SetPoint(a2)
+        edges[#edges + 1] = { tex = t, orientation = orientation,
+                              opaqueAtMin = opaqueAtMin, horizontal = horizontal }
+    end
+    Strip("VERTICAL", false, "TOPLEFT", "TOPRIGHT", true)        -- top
+    Strip("VERTICAL", true, "BOTTOMLEFT", "BOTTOMRIGHT", true)   -- bottom
+    Strip("HORIZONTAL", true, "TOPLEFT", "BOTTOMLEFT", false)    -- left
+    Strip("HORIZONTAL", false, "TOPRIGHT", "BOTTOMRIGHT", false) -- right
 end
-EdgeStrip("VERTICAL", false, "TOPLEFT", "TOPRIGHT", true)        -- top
-EdgeStrip("VERTICAL", true, "BOTTOMLEFT", "BOTTOMRIGHT", true)   -- bottom
-EdgeStrip("HORIZONTAL", true, "TOPLEFT", "BOTTOMLEFT", false)    -- left
-EdgeStrip("HORIZONTAL", false, "TOPRIGHT", "BOTTOMRIGHT", false) -- right
+
+-- Previews, shown while the settings window is open.
+local previewOverlay = CreateFrame("Frame", nil, body)
+previewOverlay:SetAllPoints()
+previewOverlay:SetFrameLevel(body:GetFrameLevel() + 20)
+local previewGlow = IconGlow(previewOverlay)
+local previewBlink = Blink(previewGlow)
+previewBlink:SetScript("OnStop", function() previewGlow:SetAlpha(1) end)
+
+local previewScreen = CreateFrame("Frame", "MaelstromTrackerScreenGlow", UIParent)
+previewScreen:SetAllPoints(UIParent)
+previewScreen:SetFrameStrata("BACKGROUND")
+previewScreen:EnableMouse(false)
+previewScreen:Hide()
+EdgeStrips(previewScreen)
+local previewScreenBlink = Blink(previewScreen)
+previewScreenBlink:SetScript("OnStop", function() previewScreen:SetAlpha(1) end)
+
+---------------------------------------------------------------------------
+-- Game-driven display (Blizzard_AuraContainer)
+---------------------------------------------------------------------------
+local native = { built = false } -- iconContainer, screenContainer, iconGlow, error
+
+local function SpellSet()
+    local set = {}
+    for _, id in ipairs(SPELL_IDS) do set[id] = true end
+    return set
+end
+
+-- Stack count text: the number from 1 stack, colored at 5.
+local function CountFormatter()
+    if not (C_StringUtil and C_StringUtil.CreateNumericRuleFormatter) then return nil end
+    local ok, fmt = pcall(C_StringUtil.CreateNumericRuleFormatter)
+    if not ok or not fmt then return nil end
+    local R = (Enum and Enum.NumericRuleFormatRounding) or {}
+    local down = R.Down or 2
+    ok = pcall(fmt.SetBreakpoints, fmt, {
+        { threshold = 0, format = "" },
+        { threshold = 1, step = 1, rounding = down, format = "%d" },
+        { threshold = MAX_STACKS, step = 1, rounding = down, format = MAX_COLOR .. "%d|r" },
+    })
+    return ok and fmt or nil
+end
+
+-- A status bar the game shows only at max stacks. Its fill is invisible; it
+-- only exists so its children (our glows) follow its visibility.
+local function MaxStackBar(button)
+    local bar = CreateFrame("StatusBar", nil, button)
+    bar:SetAllPoints(button)
+    bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+    bar:SetStatusBarColor(0, 0, 0, 0)
+    local I = Enum and Enum.StatusBarInterpolation
+    button:SetApplicationBar(bar, { minApplications = MAX_STACKS, maxApplications = MAX_STACKS,
+                                    interpolation = I and I.Immediate })
+    return bar
+end
+
+local function NoMouse(button)
+    pcall(button.SetMouseClickEnabled, button, false)
+    pcall(button.EnableMouseMotion, button, false)
+    pcall(button.EnableMouse, button, false)
+end
+
+local function NewContainer(parent)
+    local c = CreateFrame("AuraContainer", nil, parent, "CustomAuraContainerTemplate")
+    c:SetAllPoints(parent)
+    c:SetUnit("player")
+    return c
+end
+
+local function BuildIcon()
+    local c = NewContainer(body)
+    c:AddAuraSlot("maelstrom", "HELPFUL", {
+        candidateFilters = { includeSpellIDs = SpellSet() },
+        initializeFrame = function(button)
+            button:ClearAllPoints()
+            button:SetAllPoints(c)
+            NoMouse(button)
+            Border(button)
+
+            local icon = button:CreateTexture(nil, "ARTWORK")
+            icon:SetAllPoints()
+            icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            button:SetIcon(icon)
+
+            local cd = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
+            cd:SetAllPoints()
+            cd:SetDrawEdge(false)
+            cd:SetHideCountdownNumbers(true)
+            button:SetDurationCooldown(cd)
+
+            local bar = MaxStackBar(button)
+            bar:SetFrameLevel(cd:GetFrameLevel() + 2)
+            native.iconGlow = IconGlow(bar)
+            Blink(native.iconGlow):Play() -- loops forever; only visible at 5 stacks
+
+            local overlay = CreateFrame("Frame", nil, button)
+            overlay:SetAllPoints()
+            overlay:SetFrameLevel(bar:GetFrameLevel() + 2)
+            local count = overlay:CreateFontString(nil, "OVERLAY", "NumberFontNormalHuge")
+            count:SetPoint("CENTER")
+            local fmt = CountFormatter()
+            button:SetApplicationCount(count, fmt and { formatter = fmt } or nil)
+        end,
+    })
+    native.iconContainer = c
+end
+
+local function BuildScreen()
+    -- Own container on UIParent, so the icon's scale and opacity don't apply.
+    local host = CreateFrame("Frame", nil, UIParent)
+    host:SetAllPoints(UIParent)
+    host:SetFrameStrata("BACKGROUND")
+    host:EnableMouse(false)
+    local c = NewContainer(host)
+    c:AddAuraSlot("maelstromScreen", "HELPFUL", {
+        candidateFilters = { includeSpellIDs = SpellSet() },
+        initializeFrame = function(button)
+            button:ClearAllPoints()
+            button:SetAllPoints(c)
+            NoMouse(button)
+            local bar = MaxStackBar(button)
+            local strips = CreateFrame("Frame", nil, bar)
+            strips:SetAllPoints(bar)
+            EdgeStrips(strips)
+            Blink(strips):Play()
+        end,
+    })
+    native.screenContainer = c
+end
+
+-- Builds the game-driven display. Must run while auras aren't secret
+-- (out of combat): the game locks aura buttons from addons otherwise.
+local function BuildNative()
+    if native.built or AurasLocked() then return end
+    native.built = true
+    local ok, err = pcall(BuildIcon)
+    if ok then ok, err = pcall(BuildScreen) end
+    if not ok then
+        native.error = tostring(err)
+        print("|cff33ccffMaelstrom Tracker|r could not set up the game's aura display:", native.error)
+    end
+end
 
 -- Apply colors, depth and strength from the saved settings.
 local function ApplyLooks()
     local db = MaelstromTrackerDB
     local c = db.glowColor
-    f.glow:SetVertexColor(c.r, c.g, c.b)
+    for _, t in ipairs(glows) do pcall(t.SetVertexColor, t, c.r, c.g, c.b) end
     local s = db.screenColor
     local solid = CreateColor(s.r, s.g, s.b, db.screenStrength)
     local clear = CreateColor(s.r, s.g, s.b, 0)
     for _, e in ipairs(edges) do
-        if e.opaqueAtMin then e.tex:SetGradient(e.orientation, solid, clear)
-        else e.tex:SetGradient(e.orientation, clear, solid) end
-        if e.horizontal then e.tex:SetHeight(db.screenDepth) else e.tex:SetWidth(db.screenDepth) end
+        local t = e.tex
+        if e.opaqueAtMin then pcall(t.SetGradient, t, e.orientation, solid, clear)
+        else pcall(t.SetGradient, t, e.orientation, clear, solid) end
+        if e.horizontal then pcall(t.SetHeight, t, db.screenDepth)
+        else pcall(t.SetWidth, t, db.screenDepth) end
     end
 end
-
-local screenBlink = screenGlow:CreateAnimationGroup()
-screenBlink:SetLooping("BOUNCE")
-local sFade = screenBlink:CreateAnimation("Alpha")
-sFade:SetFromAlpha(1)
-sFade:SetToAlpha(0.2)
-sFade:SetDuration(0.8)
-sFade:SetSmoothing("IN_OUT")
-screenBlink:SetScript("OnStop", function() screenGlow:SetAlpha(1) end)
 
 local DEFAULTS = { showEmpty = true, opacity = 1, glow = true, locked = false,
                    screenGlow = false, scale = 1,
@@ -306,93 +336,56 @@ local function SetScale(scale)
 end
 
 ---------------------------------------------------------------------------
--- Update
+-- Update (settings and out-of-combat state only; stacks are drawn by the game)
 ---------------------------------------------------------------------------
-local lastSource = "none"
-
 local function Update()
-    local stacks, aura
-    local readAura = ReadAura()
-
-    if readAura ~= nil then
-        aura = readAura or nil
-        stacks = aura and (aura.applications or 0) or 0
-        if aura and stacks == 0 then stacks = 1 end
-        LearnBaseCast(stacks)
-        lastSource = "aura"
-    else
-        stacks = StacksFromCastTime()
-        lastSource = stacks and "cast time" or "none"
-    end
-
-    if aura and aura.icon then f.icon:SetTexture(aura.icon) end
-
-    if stacks and stacks > 0 then
-        f.count:SetText(stacks)
-        f.icon:SetDesaturated(false)
-        f.icon:SetAlpha(1)
-    else
-        f.count:SetText("")
-        f.icon:SetDesaturated(true)
-        f.icon:SetAlpha(0.4)
-    end
-
-    -- Duration swipe only when we can actually read the aura.
-    if aura and aura.duration and aura.duration > 0 then
-        f.cd:SetCooldown(aura.expirationTime - aura.duration, aura.duration)
-    elseif readAura ~= nil then
-        f.cd:Clear()
-    end
-    if not stacks or stacks == 0 then f.cd:Clear() end
-
+    BuildNative()
     local db = MaelstromTrackerDB or DEFAULTS
-    f:SetShown((stacks and stacks > 0) or db.showEmpty or settingsOpen)
+
+    -- Learn the real icon while we can read the aura.
+    local aura = not AurasLocked() and ReadAura()
+    if aura and aura.icon and not IsSecret(aura.icon) then f.icon:SetTexture(aura.icon) end
+
     f:SetAlpha(db.opacity)
+    empty:SetShown(db.showEmpty or settingsOpen)
 
-    local atMax = stacks and stacks >= MAX_STACKS
-    f.count:SetTextColor(atMax and 0.4 or 1, atMax and 0.9 or 1, 1)
+    if native.iconGlow then pcall(native.iconGlow.SetShown, native.iconGlow, db.glow) end
+    if native.screenContainer then
+        pcall(native.screenContainer.SetAuraSlotEnabled, native.screenContainer,
+              "maelstromScreen", db.screenGlow)
+    end
 
-    -- Glows show at max stacks, or as a preview while settings are open.
-    local glowOn = (atMax or settingsOpen) and db.glow
-    f.glow:SetShown(glowOn)
-    if glowOn and not blink:IsPlaying() then blink:Play() end
-    if not glowOn and blink:IsPlaying() then blink:Stop() end
+    local glowPreview = settingsOpen and db.glow
+    previewGlow:SetShown(glowPreview)
+    if glowPreview and not previewBlink:IsPlaying() then previewBlink:Play() end
+    if not glowPreview and previewBlink:IsPlaying() then previewBlink:Stop() end
 
-    local edge = (atMax or settingsOpen) and db.screenGlow
-    screenGlow:SetShown(edge)
-    if edge and not screenBlink:IsPlaying() then screenBlink:Play() end
-    if not edge and screenBlink:IsPlaying() then screenBlink:Stop() end
+    local edgePreview = settingsOpen and db.screenGlow
+    previewScreen:SetShown(edgePreview)
+    if edgePreview and not previewScreenBlink:IsPlaying() then previewScreenBlink:Play() end
+    if not edgePreview and previewScreenBlink:IsPlaying() then previewScreenBlink:Stop() end
 end
 
 f:RegisterEvent("ADDON_LOADED")
 f:RegisterEvent("PLAYER_ENTERING_WORLD")
-f:RegisterEvent("PLAYER_REGEN_DISABLED")
 f:RegisterEvent("PLAYER_REGEN_ENABLED")
-f:RegisterUnitEvent("UNIT_AURA", "player")
-for _, e in ipairs({ "PLAYER_TALENT_UPDATE", "CHARACTER_POINTS_CHANGED", "SPELLS_CHANGED" }) do
-    pcall(f.RegisterEvent, f, e)
-end
 f:SetScript("OnEvent", function(self, event, arg1)
-    if event ~= "UNIT_AURA" and event ~= "ADDON_LOADED" then
-        UpdateTalent()
-    end
     if event == "ADDON_LOADED" then
         if arg1 ~= ADDON then return end
         MaelstromTrackerDB = MaelstromTrackerDB or {}
+        MaelstromTrackerDB.calib = nil -- leftover from the old cast-time workaround
         for k, v in pairs(DEFAULTS) do
             if MaelstromTrackerDB[k] == nil then
                 MaelstromTrackerDB[k] = type(v) == "table" and CopyTable(v) or v
             end
         end
-        ApplyLooks()
         if MaelstromTrackerDB.locked then f:EnableMouse(false) end
         f:SetScale(MaelstromTrackerDB.scale)
         RestorePosition()
         self:UnregisterEvent("ADDON_LOADED")
-        -- Poll too: cast time changes don't fire UNIT_AURA we can read.
-        C_Timer.NewTicker(0.1, Update)
     end
     Update()
+    ApplyLooks()
 end)
 
 ---------------------------------------------------------------------------
@@ -604,30 +597,23 @@ SlashCmdList.MAELSTROMTRACKER = function(msg)
     elseif msg == "debug" then
         local a = ReadAura()
         P("debug")
-        print("  in combat:", tostring(InCombatLockdown()), " auras locked:", tostring(AurasLocked()))
+        print("  in combat:", tostring(InCombatLockdown()), " auras secret:", tostring(AurasLocked()))
         if a == nil then
-            print("  aura: blocked by game")
+            print("  aura (addon read): blocked by game")
         elseif a == false then
-            print("  aura: not found")
+            print("  aura (addon read): not found")
         else
-            print("  aura: id=" .. Show(a.spellId), "stacks=" .. Show(a.applications))
+            print("  aura (addon read): id=" .. Show(a.spellId), "stacks=" .. Show(a.applications))
         end
-        print("  probe cast time:", Show(ProbeCastTime()), " base:", tostring(baseCast))
-        print("  cast-time stacks:", tostring(StacksFromCastTime()), " source used:", lastSource)
-        print("  talent:", talentRank and (talentRank .. "/" .. talentMax) or "not found",
-              " per stack:", ("%.0f%%"):format(PerStack() * 100),
-              talentRank and "" or (learnedPerStack and "(learned)" or "(default)"))
-        local cast = ProbeCastTime()
-        if cast and baseCast then print(("  ratio now: %.3f"):format(cast / baseCast)) end
-        local t, parts = CalibTable() or {}, {}
-        for s = 1, MAX_STACKS do
-            parts[#parts + 1] = s .. "=" .. (t[s] and ("%.3f"):format(t[s]) or ("~%.3f"):format(ExpectedRatio(s)))
+        if native.error then
+            print("  game aura display: FAILED -", native.error)
+        elseif native.iconContainer then
+            local ok, n = pcall(native.iconContainer.GetAuraSlotFrame, native.iconContainer, "maelstrom")
+            print("  game aura display: active, slot", ok and n and "ok" or "missing")
+        else
+            print("  game aura display: waiting to leave combat")
         end
-        print("  expected ratios (~ = formula, not yet measured):", table.concat(parts, " "))
-    elseif msg == "recalibrate" then
-        if MaelstromTrackerDB then MaelstromTrackerDB.calib = nil end
-        P("calibration cleared.")
     else
-        P("/mwt (settings) | lock | unlock | reset | debug | recalibrate")
+        P("/mwt (settings) | lock | unlock | reset | debug")
     end
 end

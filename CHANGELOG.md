@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.0
+
+- Stacks are now drawn by the game's own aura display (Blizzard_AuraContainer), so the count, duration sweep and 5-stack glows are exact in combat.
+- Removed the Lightning Bolt cast-time workaround, along with talent detection, calibration and `/mwt recalibrate`.
+- The duration sweep now also shows in combat.
+- No more polling.
+
 ## v1.0.0
 
 - Initial release.
