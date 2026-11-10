@@ -1,8 +1,9 @@
 ## Interface: 16001
 ## Title: Maelstrom Tracker
 ## Notes: Shows Maelstrom Weapon stacks as a movable icon. Glows and blinks at 5 stacks.
-## Author: antonolin
-## Version: 1.0.0
+## Author: a3jk
+## Version: @project-version@
 ## SavedVariables: MaelstromTrackerDB
+## X-Curse-Project-ID: 1795373
 
 MaelstromTracker.lua

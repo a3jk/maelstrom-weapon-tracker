@@ -1,0 +1,15 @@
+package-as: MaelstromTracker
+
+# The addon source lives in the MaelstromTracker/ subfolder; lift it to the
+# root of the package so the zip contains MaelstromTracker/MaelstromTracker.toc.
+move-folders:
+  MaelstromTracker/MaelstromTracker: MaelstromTracker
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
+
+ignore:
+  - README.md
+  - media
+  - tools
