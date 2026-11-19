@@ -150,19 +150,42 @@ previewScreenBlink:SetScript("OnStop", function() previewScreen:SetAlpha(1) end)
 ---------------------------------------------------------------------------
 -- Sound at 5 stacks
 ---------------------------------------------------------------------------
--- Every named game sound (the SOUNDKIT table), sorted. Built on first use.
-local soundList
+-- Alert-style game sounds (SOUNDKIT keys) to choose from. Names the client
+-- doesn't have are left out of the list.
+local SOUNDS = {
+    { "RAID_WARNING", "Raid Warning" },
+    { "RAID_BOSS_EMOTE_WARNING", "Boss Emote Warning" },
+    { "UI_RAID_BOSS_WHISPER_WARNING", "Boss Whisper Warning" },
+    { "READY_CHECK", "Ready Check" },
+    { "ALARM_CLOCK_WARNING_1", "Alarm Clock 1" },
+    { "ALARM_CLOCK_WARNING_2", "Alarm Clock 2" },
+    { "ALARM_CLOCK_WARNING_3", "Alarm Clock 3" },
+    { "PVP_THROUGH_QUEUE", "Queue Ready" },
+    { "TELL_MESSAGE", "Whisper" },
+    { "MAP_PING", "Map Ping" },
+    { "IG_PLAYER_INVITE", "Invite" },
+    { "IG_QUEST_LIST_COMPLETE", "Quest Complete" },
+    { "UI_BNET_TOAST", "Battle.net Toast" },
+    { "UI_EPICLOOT_TOAST", "Epic Loot" },
+    { "UI_LEGENDARY_LOOT_TOAST", "Legendary Loot" },
+    { "LOOT_WINDOW_COIN_SOUND", "Coins" },
+    { "IG_MAINMENU_OPTION_CHECKBOX_ON", "Click" },
+}
+
+local soundList -- { key, label } entries the client has, "None" first
 local function SoundList()
     if not soundList then
-        soundList = {}
-        for name, id in pairs(SOUNDKIT or {}) do
-            if type(name) == "string" and type(id) == "number" then
-                soundList[#soundList + 1] = name
-            end
+        soundList = { { "", "None" } }
+        for _, e in ipairs(SOUNDS) do
+            if SOUNDKIT and type(SOUNDKIT[e[1]]) == "number" then soundList[#soundList + 1] = e end
         end
-        table.sort(soundList)
     end
     return soundList
+end
+
+local function SoundLabel(key)
+    for _, e in ipairs(SoundList()) do if e[1] == key then return e[2] end end
+    return key -- a sound picked in an older version
 end
 
 local function PlayAlertSound(name)
@@ -605,8 +628,8 @@ local function CreateSettings()
 
     local function Looks(key) return function(v) MaelstromTrackerDB[key] = v; ApplyLooks() end end
 
-    -- Sound picker: a button that opens a searchable, scrollable list of
-    -- every game sound, plus a button to play the chosen one.
+    -- Sound picker: a button that opens the list of sounds, plus a button to
+    -- play the chosen one.
     local function SoundDropdown()
         local label = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         label:SetPoint("TOPLEFT", x + 18, y - 6)
@@ -626,20 +649,17 @@ local function CreateSettings()
         play:SetText("Play")
         play:SetScript("OnClick", function() PlayAlertSound(MaelstromTrackerDB.sound) end)
 
-        local function Refresh()
-            local s = MaelstromTrackerDB.sound
-            btn:SetText(s ~= "" and s or "None")
-        end
+        local function Refresh() btn:SetText(SoundLabel(MaelstromTrackerDB.sound)) end
         btn:HookScript("OnShow", Refresh)
 
-        local ROWS, ROW_H = 14, 18
+        local ROW_H = 18
+        local entries = SoundList()
         local list = CreateFrame("Frame", nil, btn)
         list:SetFrameStrata("DIALOG")
-        list:SetSize(270, ROWS * ROW_H + 52)
+        list:SetSize(190, #entries * ROW_H + 12)
         list:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -2)
         list:SetClampedToScreen(true)
         list:EnableMouse(true)
-        list:EnableMouseWheel(true)
         list:Hide()
         local edge = list:CreateTexture(nil, "BACKGROUND", nil, -8)
         edge:SetAllPoints()
@@ -649,90 +669,35 @@ local function CreateSettings()
         bg:SetPoint("BOTTOMRIGHT", -1, 1)
         bg:SetColorTexture(0.05, 0.05, 0.08, 0.97)
 
-        local search = CreateFrame("EditBox", nil, list, "InputBoxTemplate")
-        search:SetSize(246, 20)
-        search:SetPoint("TOPLEFT", 14, -8)
-        search:SetAutoFocus(false)
-        local searchHint = search:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        searchHint:SetPoint("LEFT", 2, 0)
-        searchHint:SetText("Search...")
-
-        local footer = list:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-        footer:SetPoint("BOTTOMLEFT", 10, 8)
-
-        local filtered, offset, rows = {}, 0, {}
-        local function Render()
-            offset = math.max(0, math.min(offset, #filtered - ROWS))
-            for i, row in ipairs(rows) do
-                local name = filtered[offset + i]
-                row.name = name
-                if name then
-                    row.text:SetText(name == "" and "None" or name)
-                    row.sel:SetShown(name == MaelstromTrackerDB.sound)
-                end
-                row:SetShown(name ~= nil)
-            end
-            if #filtered == 0 then
-                footer:SetText("No matches")
-            else
-                footer:SetText(("%d-%d of %d  (scroll for more)"):format(offset + 1,
-                    math.min(offset + ROWS, #filtered), #filtered))
-            end
-        end
-
-        local function Filter()
-            local q = search:GetText():lower()
-            searchHint:SetShown(q == "")
-            wipe(filtered)
-            if q == "" then filtered[1] = "" end
-            for _, name in ipairs(SoundList()) do
-                if q == "" or name:lower():find(q, 1, true) then filtered[#filtered + 1] = name end
-            end
-            offset = 0
-            Render()
-        end
-
-        for i = 1, ROWS do
+        local rows = {}
+        for i, e in ipairs(entries) do
             local row = CreateFrame("Button", nil, list)
-            row:SetSize(250, ROW_H)
-            row:SetPoint("TOPLEFT", 10, -32 - (i - 1) * ROW_H)
+            row:SetSize(178, ROW_H)
+            row:SetPoint("TOPLEFT", 6, -6 - (i - 1) * ROW_H)
+            row.key = e[1]
             row.sel = row:CreateTexture(nil, "BACKGROUND")
             row.sel:SetAllPoints()
             row.sel:SetColorTexture(0.2, 0.6, 1, 0.3)
             local hl = row:CreateTexture(nil, "HIGHLIGHT")
             hl:SetAllPoints()
             hl:SetColorTexture(1, 1, 1, 0.15)
-            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            row.text:SetPoint("LEFT", 4, 0)
-            row.text:SetPoint("RIGHT", -4, 0)
-            row.text:SetJustifyH("LEFT")
+            local text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            text:SetPoint("LEFT", 4, 0)
+            text:SetPoint("RIGHT", -4, 0)
+            text:SetJustifyH("LEFT")
+            text:SetText(e[2])
             row:SetScript("OnClick", function(self)
-                MaelstromTrackerDB.sound = self.name
-                PlayAlertSound(self.name)
+                MaelstromTrackerDB.sound = self.key
+                PlayAlertSound(self.key)
                 Refresh()
                 list:Hide()
             end)
             rows[i] = row
         end
 
-        search:SetScript("OnTextChanged", Filter)
-        search:SetScript("OnEscapePressed", function() list:Hide() end)
-        search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-        list:SetScript("OnMouseWheel", function(_, delta)
-            offset = offset - delta * 3
-            Render()
-        end)
-        list:SetScript("OnHide", function() search:ClearFocus() end)
-
         btn:SetScript("OnClick", function()
             if list:IsShown() then list:Hide(); return end
-            search:SetText("")
-            Filter()
-            -- Scroll so the current sound is in view.
-            for i, name in ipairs(filtered) do
-                if name == MaelstromTrackerDB.sound then offset = i - 1 - math.floor(ROWS / 2) end
-            end
-            Render()
+            for _, row in ipairs(rows) do row.sel:SetShown(row.key == MaelstromTrackerDB.sound) end
             list:Show()
         end)
         y = y - 54

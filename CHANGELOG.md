@@ -2,7 +2,7 @@
 
 ## v1.2.2
 
-- Sound at 5 stacks, chosen in the settings (`/mwt`) from a searchable list of every game sound, or None. A Play button previews it.
+- Sound at 5 stacks, chosen in the settings (`/mwt`) from a short list of alert sounds (raid warning, ready check, alarm clock and more), or None. A Play button previews it.
 - The sound is triggered by the game's spell activation overlay (the 5-stack proc art and Lightning Bolt glow), which addons may read in combat.
 - `/mwt events` logs the overlay events, to check what the game sends.
 
