@@ -148,6 +148,76 @@ local previewScreenBlink = Blink(previewScreen)
 previewScreenBlink:SetScript("OnStop", function() previewScreen:SetAlpha(1) end)
 
 ---------------------------------------------------------------------------
+-- Sound at 5 stacks
+---------------------------------------------------------------------------
+-- Every named game sound (the SOUNDKIT table), sorted. Built on first use.
+local soundList
+local function SoundList()
+    if not soundList then
+        soundList = {}
+        for name, id in pairs(SOUNDKIT or {}) do
+            if type(name) == "string" and type(id) == "number" then
+                soundList[#soundList + 1] = name
+            end
+        end
+        table.sort(soundList)
+    end
+    return soundList
+end
+
+local function PlayAlertSound(name)
+    local id = name and name ~= "" and SOUNDKIT and SOUNDKIT[name]
+    if id then pcall(PlaySound, id, "Master") end
+end
+
+-- When to play it. Aura data is secret in combat, and addon code must never
+-- hook the game-driven aura frames (that breaks their updates). But at 5
+-- stacks the game also fires its spell activation overlay events (the proc
+-- art and the Lightning Bolt button glow), which addons may read in combat.
+-- The sound plays when either of those turns on.
+local alertState = { overlay = false, glows = {}, last = 0, log = false }
+local boltName -- Lightning Bolt, looked up on first use (spell data may load late)
+
+local function IsMaelstromID(id)
+    for _, sid in ipairs(SPELL_IDS) do if id == sid then return true end end
+    return false
+end
+
+local function AlertActive()
+    return alertState.overlay or next(alertState.glows) ~= nil
+end
+
+local alertFrame = CreateFrame("Frame")
+for _, e in ipairs({ "SPELL_ACTIVATION_OVERLAY_SHOW", "SPELL_ACTIVATION_OVERLAY_HIDE",
+                     "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW", "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE" }) do
+    pcall(alertFrame.RegisterEvent, alertFrame, e)
+end
+alertFrame:SetScript("OnEvent", function(_, event, spellID)
+    if IsSecret(spellID) then return end
+    if alertState.log then
+        print("|cff33ccffMaelstrom Tracker|r", event, tostring(spellID), spellID and SpellName(spellID) or "")
+    end
+    local was = AlertActive()
+    if event == "SPELL_ACTIVATION_OVERLAY_SHOW" then
+        if IsMaelstromID(spellID) then alertState.overlay = true end
+    elseif event == "SPELL_ACTIVATION_OVERLAY_HIDE" then
+        if spellID == nil or IsMaelstromID(spellID) then alertState.overlay = false end
+    elseif event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" then
+        boltName = boltName or SpellName(403)
+        if spellID and boltName and SpellName(spellID) == boltName then alertState.glows[spellID] = true end
+    elseif event == "SPELL_ACTIVATION_OVERLAY_GLOW_HIDE" then
+        if spellID then alertState.glows[spellID] = nil end
+    end
+    if not was and AlertActive() then
+        local now = GetTime()
+        if now - alertState.last >= 1 then
+            alertState.last = now
+            PlayAlertSound(MaelstromTrackerDB and MaelstromTrackerDB.sound)
+        end
+    end
+end)
+
+---------------------------------------------------------------------------
 -- Game-driven display (Blizzard_AuraContainer)
 ---------------------------------------------------------------------------
 local native = { built = false } -- iconContainer, screenContainer, iconGlow, error
@@ -293,6 +363,7 @@ end
 local DEFAULTS = { showEmpty = true, opacity = 1, glow = true, locked = false,
                    screenGlow = false, scale = 1,
                    screenDepth = 90, screenStrength = 0.55,
+                   sound = "RAID_WARNING", -- SOUNDKIT key, "" = no sound
                    glowColor = { r = 0.8, g = 1, b = 1 },
                    screenColor = { r = 0.8, g = 1, b = 1 } }
 local settingsOpen = false -- always show the icon while positioning in settings
@@ -407,7 +478,7 @@ local function CreateSettings()
         local close = CreateFrame("Button", nil, win, "UIPanelCloseButton")
         close:SetPoint("TOPRIGHT", 2, 2)
     end
-    win:SetSize(500, 330)
+    win:SetSize(500, 350)
     win:SetPoint("CENTER")
     win:SetFrameStrata("HIGH") -- below the color picker (DIALOG)
     win:SetClampedToScreen(true)
@@ -534,6 +605,139 @@ local function CreateSettings()
 
     local function Looks(key) return function(v) MaelstromTrackerDB[key] = v; ApplyLooks() end end
 
+    -- Sound picker: a button that opens a searchable, scrollable list of
+    -- every game sound, plus a button to play the chosen one.
+    local function SoundDropdown()
+        local label = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        label:SetPoint("TOPLEFT", x + 18, y - 6)
+        label:SetText("Sound at 5 stacks")
+
+        local btn = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+        btn:SetSize(170, 22)
+        btn:SetPoint("TOPLEFT", x + 18, y - 24)
+        btn:SetText("None")
+        local btnText = btn:GetFontString()
+        btnText:SetWidth(156)
+        pcall(btnText.SetWordWrap, btnText, false)
+
+        local play = CreateFrame("Button", nil, win, "UIPanelButtonTemplate")
+        play:SetSize(46, 22)
+        play:SetPoint("LEFT", btn, "RIGHT", 4, 0)
+        play:SetText("Play")
+        play:SetScript("OnClick", function() PlayAlertSound(MaelstromTrackerDB.sound) end)
+
+        local function Refresh()
+            local s = MaelstromTrackerDB.sound
+            btn:SetText(s ~= "" and s or "None")
+        end
+        btn:HookScript("OnShow", Refresh)
+
+        local ROWS, ROW_H = 14, 18
+        local list = CreateFrame("Frame", nil, btn)
+        list:SetFrameStrata("DIALOG")
+        list:SetSize(270, ROWS * ROW_H + 52)
+        list:SetPoint("TOPLEFT", btn, "BOTTOMLEFT", 0, -2)
+        list:SetClampedToScreen(true)
+        list:EnableMouse(true)
+        list:EnableMouseWheel(true)
+        list:Hide()
+        local edge = list:CreateTexture(nil, "BACKGROUND", nil, -8)
+        edge:SetAllPoints()
+        edge:SetColorTexture(0.5, 0.5, 0.55, 1)
+        local bg = list:CreateTexture(nil, "BACKGROUND", nil, 0)
+        bg:SetPoint("TOPLEFT", 1, -1)
+        bg:SetPoint("BOTTOMRIGHT", -1, 1)
+        bg:SetColorTexture(0.05, 0.05, 0.08, 0.97)
+
+        local search = CreateFrame("EditBox", nil, list, "InputBoxTemplate")
+        search:SetSize(246, 20)
+        search:SetPoint("TOPLEFT", 14, -8)
+        search:SetAutoFocus(false)
+        local searchHint = search:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        searchHint:SetPoint("LEFT", 2, 0)
+        searchHint:SetText("Search...")
+
+        local footer = list:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        footer:SetPoint("BOTTOMLEFT", 10, 8)
+
+        local filtered, offset, rows = {}, 0, {}
+        local function Render()
+            offset = math.max(0, math.min(offset, #filtered - ROWS))
+            for i, row in ipairs(rows) do
+                local name = filtered[offset + i]
+                row.name = name
+                if name then
+                    row.text:SetText(name == "" and "None" or name)
+                    row.sel:SetShown(name == MaelstromTrackerDB.sound)
+                end
+                row:SetShown(name ~= nil)
+            end
+            if #filtered == 0 then
+                footer:SetText("No matches")
+            else
+                footer:SetText(("%d-%d of %d  (scroll for more)"):format(offset + 1,
+                    math.min(offset + ROWS, #filtered), #filtered))
+            end
+        end
+
+        local function Filter()
+            local q = search:GetText():lower()
+            searchHint:SetShown(q == "")
+            wipe(filtered)
+            if q == "" then filtered[1] = "" end
+            for _, name in ipairs(SoundList()) do
+                if q == "" or name:lower():find(q, 1, true) then filtered[#filtered + 1] = name end
+            end
+            offset = 0
+            Render()
+        end
+
+        for i = 1, ROWS do
+            local row = CreateFrame("Button", nil, list)
+            row:SetSize(250, ROW_H)
+            row:SetPoint("TOPLEFT", 10, -32 - (i - 1) * ROW_H)
+            row.sel = row:CreateTexture(nil, "BACKGROUND")
+            row.sel:SetAllPoints()
+            row.sel:SetColorTexture(0.2, 0.6, 1, 0.3)
+            local hl = row:CreateTexture(nil, "HIGHLIGHT")
+            hl:SetAllPoints()
+            hl:SetColorTexture(1, 1, 1, 0.15)
+            row.text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            row.text:SetPoint("LEFT", 4, 0)
+            row.text:SetPoint("RIGHT", -4, 0)
+            row.text:SetJustifyH("LEFT")
+            row:SetScript("OnClick", function(self)
+                MaelstromTrackerDB.sound = self.name
+                PlayAlertSound(self.name)
+                Refresh()
+                list:Hide()
+            end)
+            rows[i] = row
+        end
+
+        search:SetScript("OnTextChanged", Filter)
+        search:SetScript("OnEscapePressed", function() list:Hide() end)
+        search:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        list:SetScript("OnMouseWheel", function(_, delta)
+            offset = offset - delta * 3
+            Render()
+        end)
+        list:SetScript("OnHide", function() search:ClearFocus() end)
+
+        btn:SetScript("OnClick", function()
+            if list:IsShown() then list:Hide(); return end
+            search:SetText("")
+            Filter()
+            -- Scroll so the current sound is in view.
+            for i, name in ipairs(filtered) do
+                if name == MaelstromTrackerDB.sound then offset = i - 1 - math.floor(ROWS / 2) end
+            end
+            Render()
+            list:Show()
+        end)
+        y = y - 54
+    end
+
     Column(0, "Icon")
     Checkbox("Show with no stacks", "showEmpty")
     Checkbox("Lock position", "locked", SetLocked)
@@ -547,6 +751,7 @@ local function CreateSettings()
     ColorSwatch("Color", "screenColor")
     Slider("Depth: %d px", "screenDepth", 20, 300, 5, Looks("screenDepth"), 1)
     Slider("Strength: %d%%", "screenStrength", 0.05, 1, 0.05, Looks("screenStrength"))
+    SoundDropdown()
 
     local hint = win:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("TOPLEFT", x + 18, y - 4)
@@ -594,10 +799,14 @@ SlashCmdList.MAELSTROMTRACKER = function(msg)
         MaelstromTrackerDB.pos = nil
         RestorePosition()
         P("position reset.")
+    elseif msg == "events" then
+        alertState.log = not alertState.log
+        P("logging spell activation overlay events:", alertState.log and "on" or "off")
     elseif msg == "debug" then
         local a = ReadAura()
         P("debug")
         print("  in combat:", tostring(InCombatLockdown()), " auras secret:", tostring(AurasLocked()))
+        print("  5-stack alert: overlay=" .. tostring(alertState.overlay), "bolt glow=" .. tostring(next(alertState.glows) ~= nil))
         if a == nil then
             print("  aura (addon read): blocked by game")
         elseif a == false then
@@ -614,6 +823,6 @@ SlashCmdList.MAELSTROMTRACKER = function(msg)
             print("  game aura display: waiting to leave combat")
         end
     else
-        P("/mwt (settings) | lock | unlock | reset | debug")
+        P("/mwt (settings) | lock | unlock | reset | debug | events")
     end
 end

@@ -13,6 +13,7 @@ Available on [CurseForge](https://www.curseforge.com/projects/1795373).
 - Shows your Maelstrom Weapon stack count, with a duration sweep
 - Blinking glow ring at 5 stacks
 - Optional glow around the edges of the screen at 5 stacks
+- Sound alert at 5 stacks, chosen from every in-game sound (or none)
 - Drag the icon anywhere on screen, or lock it in place
 - Adjustable scale and opacity
 - Custom colors for the icon glow and the screen glow
@@ -26,6 +27,7 @@ Open the settings with `/mwt`.
 
 - **Icon:** show with no stacks, lock position, glow on/off, glow color, opacity and scale.
 - **Screen edge glow:** on/off, color, depth and strength.
+- **Sound at 5 stacks:** pick any game sound from the searchable list, or None. Play previews it.
 
 Drag the icon with the left mouse button to move it, unless it's locked.
 
@@ -34,6 +36,7 @@ Other commands:
 - `/mwt lock` / `/mwt unlock`
 - `/mwt reset` moves the icon back to its default position.
 - `/mwt debug` prints what the addon currently sees.
+- `/mwt events` toggles logging of the game's spell activation overlay events (what triggers the 5-stack sound).
 
 ## Notes
 
