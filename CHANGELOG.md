@@ -1,10 +1,5 @@
 # Changelog
 
-## v1.2.0
-
-- Plays a sound when you reach 5 stacks, in combat too.
-- Choose the sound in the settings (`/mwt`) from a searchable list of every game sound, or pick None to turn it off. A Play button previews it.
-
 ## v1.1.0
 
 - Stacks are now drawn by the game's own aura display (Blizzard_AuraContainer), so the count, duration sweep and 5-stack glows are exact in combat.
